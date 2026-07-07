@@ -1,0 +1,119 @@
+﻿## 3.1 Identify Suitable Fill Variables for Choropleth Maps
+
+| Variable | Variable type | Suitable as fill color? Why or why not? | Would the result be a choropleth map? Why or why not? |
+|---|---|---|---|
+| GDP per capita | Quantitative, intensive | Yes. It is normalized per person, so countries can be compared by color. | Yes. A choropleth is appropriate because fill color shows an intensive country-level statistic. |
+| Life expectancy | Quantitative, intensive | Yes. It is an average measure, so countries can be compared by color. | Yes. It is a choropleth because color represents an intensive country-level statistic. |
+| Region | Categorical, nominal | Yes, but only with a qualitative palette because regions are categories. | No. It would be a categorical thematic map, not a choropleth, because the colors do not show statistical intensity. |
+| Population | Quantitative, extensive | Not ideal. Total population depends on country size and can be misleading as polygon fill. | No, not strictly. Population density would be better for a choropleth because it normalizes population by area. |
+
+## 3.2 Start Coding
+```{r}
+ #| label: setup
+  #| message: false
+  library(tidyverse)
+  library(mapview)
+  library(patchwork)
+  library(readxl)
+  library(rmapshaper)
+  library(scales)
+  library(sf)
+  library(shadowtext)
+```
+
+```{r}
+gdp_file <- "API_NY.GDP.PCAP.PP.KD_DS2_en_excel_v2_417139.xls"
+life_file <- "API_SP.DYN.LE00.IN_DS2_en_excel_v2_404463.xls"
+
+gdp <- read_xls(gdp_file, sheet = "Data", skip = 3) |>
+transmute(
+    name = `Country Name`,
+    code = `Country Code`,
+    gdp_per_cap = as.numeric(`2024`)
+)
+
+life <- read_xls(life_file, sheet = "Data", skip = 3) |>
+transmute(
+    name = `Country Name`,
+    code = `Country Code`,
+    life_exp = as.numeric(`2024`)
+)
+
+regions <- read_xls(gdp_file, sheet = "Metadata - Countries") |>
+transmute(
+    code = `Country Code`,
+    region = Region
+)
+
+country_stats <- gdp |>
+left_join(life, by = c("name", "code")) |>
+left_join(regions, by = "code") |>
+filter(!is.na(region)) |>
+select(name, code, gdp_per_cap, life_exp)
+
+country_stats
+nrow(country_stats)
+```
+
+```{r}
+country_boundaries <- st_read("WB_GAD_ADM0_complete.geojson", quiet = TRUE) |>
+    transmute(
+      code = ISO_A3,
+      status = WB_STATUS
+    )
+
+  country_boundaries
+  nrow(country_boundaries)
+  unique(st_geometry_type(country_boundaries))
+  st_is_longlat(country_boundaries)
+```
+
+```{r}
+sum(!st_is_valid(country_boundaries))
+
+country_boundaries <- st_make_valid(country_boundaries)
+
+sum(!st_is_valid(country_boundaries))
+nrow(country_boundaries)
+unique(st_geometry_type(country_boundaries))
+```
+
+```{r}
+# a. Number of boundary points before simplification
+points_before <- npts(country_boundaries)
+points_before
+
+# b. Number of polygons for Singapore before simplification
+sgp_polygons_before <- country_boundaries |>
+  filter(code == "SGP") |>
+  st_cast("POLYGON") |>
+  nrow()
+
+sgp_polygons_before
+
+# c. Simplify to approximately 10,000 boundary points
+keep_target <- 10000 / points_before
+
+country_boundaries <- country_boundaries |>
+  ms_simplify(
+    keep = keep_target,
+    keep_shapes = TRUE
+  )
+
+# d. Number of polygons for Singapore after simplification
+points_after <- npts(country_boundaries)
+points_after
+
+sgp_polygons_after <- country_boundaries |>
+  filter(code == "SGP") |>
+  st_cast("POLYGON") |>
+  nrow()
+
+sgp_polygons_after
+
+# Verifier checks
+nrow(country_boundaries)
+sum(st_is_empty(country_boundaries))
+sum(!st_is_valid(country_boundaries))
+```
+
