@@ -38,23 +38,23 @@ library(shadowtext)
 ```{r}
 #| label: import-stats
 country_stats <-
+  "API_NY.GDP.PCAP.PP.KD_DS2_en_excel_v2_417139.xls" |>
+  read_xls(skip = 3) |>
+  select(name = "Country Name", code = "Country Code", gdp_per_cap = "2024") |>
+  left_join(
+    "API_SP.DYN.LE00.IN_DS2_en_excel_v2_404463.xls" |>
+      read_xls(skip = 3) |>
+      select(code = "Country Code", life_exp = "2024"),
+    join_by(code)
+  ) |>
+  left_join(
     "API_NY.GDP.PCAP.PP.KD_DS2_en_excel_v2_417139.xls" |>
-    read_xls(skip = 3) |>
-    select(name = "Country Name", code = "Country Code", gdp_per_cap = "2024") |>
-    left_join(
-        "API_SP.DYN.LE00.IN_DS2_en_excel_v2_404463.xls" |>
-            read_xls(skip = 3) |>
-            select(code = "Country Code", life_exp = "2024"),
-        join_by(code)
-    ) |>
-    left_join(
-        "API_NY.GDP.PCAP.PP.KD_DS2_en_excel_v2_417139.xls" |>
-            read_xls(sheet = "Metadata - Countries") |>
-            select(code = "Country Code", region = "Region"),
-        join_by(code)
-    ) |>
-    filter(!is.na(region)) |>
-    select(name, code, gdp_per_cap, life_exp)
+      read_xls(sheet = "Metadata - Countries") |>
+      select(code = "Country Code", region = "Region"),
+    join_by(code)
+  ) |>
+  filter(!is.na(region)) |>
+  select(name, code, gdp_per_cap, life_exp)
 
 country_stats
 ```
@@ -65,13 +65,13 @@ country_stats
 glimpse(country_stats)
 nrow(country_stats)
 country_stats |>
-    summarize(
-        n_economies      = n(),
-        n_missing_gdp    = sum(is.na(gdp_per_cap)),
-        n_missing_life   = sum(is.na(life_exp)),
-        n_missing_either = sum(is.na(gdp_per_cap) | is.na(life_exp)),
-        n_complete       = sum(!is.na(gdp_per_cap) & !is.na(life_exp))
-    )
+  summarize(
+    n_economies = n(),
+    n_missing_gdp = sum(is.na(gdp_per_cap)),
+    n_missing_life = sum(is.na(life_exp)),
+    n_missing_either = sum(is.na(gdp_per_cap) | is.na(life_exp)),
+    n_complete = sum(!is.na(gdp_per_cap) & !is.na(life_exp))
+  )
 ```
 
 ## 3.4. Import the Boundaries as sf Objects
@@ -79,9 +79,9 @@ country_stats |>
 #| label: read-boundaries
 #| cache: true
 country_boundaries <-
-    "WB_GAD_ADM0_complete.geojson" |>
-    read_sf() |>
-    select(code = ISO_A3, status = WB_STATUS)
+  "WB_GAD_ADM0_complete.geojson" |>
+  read_sf() |>
+  select(code = ISO_A3, status = WB_STATUS)
 
 country_boundaries
 ```
@@ -175,9 +175,9 @@ ggplot(country_boundaries) + geom_sf()
 
 # b.
 country_boundaries <-
-    country_boundaries |>
-    st_wrap_dateline() |>
-    st_cast("MULTIPOLYGON")
+  country_boundaries |>
+  st_wrap_dateline() |>
+  st_cast("MULTIPOLYGON")
 
 ggplot(country_boundaries) + geom_sf()
 ```
@@ -189,9 +189,9 @@ n_rows_before <- nrow(country_boundaries)
 geom_types_before <- unique(st_geometry_type(country_boundaries))
 
 country_boundaries <-
-    country_boundaries |>
-    st_wrap_dateline() |>
-    st_cast("MULTIPOLYGON")
+  country_boundaries |>
+  st_wrap_dateline() |>
+  st_cast("MULTIPOLYGON")
 
 identical(n_rows_before, nrow(country_boundaries))
 identical(geom_types_before, unique(st_geometry_type(country_boundaries)))
@@ -202,28 +202,84 @@ sum(!st_is_valid(country_boundaries))
 ```{r}
 #| label: merge-country-code
 
-# a. 
+# a.
 country_boundaries |>
-    st_drop_geometry() |>
-    filter(!is.na(code)) |>
-    count(code) |>
-    filter(n > 1)
+  st_drop_geometry() |>
+  filter(!is.na(code)) |>
+  count(code) |>
+  filter(n > 1)
 
-# c. 
+# c.
 country_boundaries <-
-    country_boundaries |>
-    mutate(group_id = if_else(is.na(code), row_number(), NA_integer_)) |>
-    group_by(code, group_id) |>
-    summarize(
-        status = if_else(
-            any(status == "Member State"),
-            "Contains a Member State",
-            "Does Not Contain a Member State"
-        ),
-        .groups = "drop"
-    ) |>
-    select(-group_id) |>
-    st_cast("MULTIPOLYGON")
+  country_boundaries |>
+  mutate(group_id = if_else(is.na(code), row_number(), NA_integer_)) |>
+  group_by(code, group_id) |>
+  summarize(
+    status = if_else(
+      any(status == "Member State"),
+      "Contains a Member State",
+      "Does Not Contain a Member State"
+    ),
+    .groups = "drop"
+  ) |>
+  select(-group_id) |>
+  st_cast("MULTIPOLYGON")
 ```
 
-b. The code BES is shared with Bonaire, Saba, and Sint Eustatius. These are separate Caribbean islands that have been special municipalities of the Netherlands since 2010 following the dissolution of the Netherlands Antilles. ^[https://www.iso.org/obp/ui/?__cf_chl_f_tk=ALBocD5LfG6qwIIA62NLdSfQ5zLB_W53YejqIETQukc-1783392780-1.0.1.1-MEBqGxLme6aD2gyXgD.eFst0MKrlMo1KMilegYKuQTU#iso:code:3166:BQ]
+b. The code BES is shared with Bonaire, Saba, and Sint Eustatius. ^[[https://www.iso.org/obp/ui/?__cf_chl_f_tk=ALBocD5LfG6qwIIA62NLdSfQ5zLB_W53YejqIETQukc-1783392780-1.0.1.1-MEBqGxLme6aD2gyXgD.eFst0MKrlMo1KMilegYKuQTU#iso:code:3166:BQ](https://www.iso.org/obp/ui/?__cf_chl_f_tk=ALBocD5LfG6qwIIA62NLdSfQ5zLB_W53YejqIETQukc-1783392780-1.0.1.1-MEBqGxLme6aD2gyXgD.eFst0MKrlMo1KMilegYKuQTU#iso:code:3166:BQ)] These are separate Caribbean islands that have been special municipalities of the Netherlands since 2010 following the dissolution of the Netherlands Antilles. ^[[https://en.wikipedia.org/wiki/Caribbean_Netherlands#:~:text=These%20are%20the%20islands,islands%20for%20short.](https://en.wikipedia.org/wiki/Caribbean_Netherlands#:~:text=These%20are%20the%20islands,islands%20for%20short.)]
+
+
+## 3.9. Join the statistics to the boundaries
+```{r}
+#| label: join-stats-to-boundaries
+countries <- country_boundaries |>
+  left_join(country_stats, by = "code")
+
+countries
+```
+
+## Verifier Task
+```{r}
+#| label: verify-3.9
+# Check for any code in country_stats that didn't find a match in country_boundaries
+unmatched <- country_stats |>
+  anti_join(country_boundaries, by = "code")
+
+unmatched
+```
+
+```{r}
+#| label: confirm-countries
+class(countries)
+nrow(countries)
+names(countries)
+```
+
+## 3.10. Compare Map projections
+
+a. The default CRS is EPSG:4326. It uses longitude and latitude coordinates. It is not really a projected CRS, but when drawn as a flat map it appears like an equirectangular.
+
+b. Equal Earth projection (EPSG:8857)
+
+```{r}
+ggplot(country_boundaries) +
+  geom_sf() +
+  coord_sf(crs = 8857)
+```
+
+c. Web Mercator
+```{r}
+ggplot(country_boundaries) +
+  geom_sf() +
+  coord_sf(crs = 3857)
+```
+
+d. Comparison 
+
+Equal Earth (EPSG::8857):
+It is designed to preserve area, keeps all countries at their true relative sizes. This is useful for global choropleth map because countries are compared using color, so the map should not make some countries look much larger than they really are. There is a low shape distortion near the poles but the shapes stay recognizable. -The curved lines of longitude and straight lines of latitude show that the map is a projection of the round Earth onto a flat surface.
+
+Web Mercator (EPSG:3857)
+The core problem is the area distortion, especially near the poles. So the places far from the equator are wildly inflated and the size is larger than they actually are. This can be misleading in a choropleth map because viewers may give more attention to contries that appear larger on the map. It preserves local shape quite well, which is useful for online maps and navigation. The graticule lines like rectangular grid, but this can hide how much the map is distorting the real size of countries, tricks viewers into misjudging relative sizes.
+
+The best projection for a global choropleth map is the Equal Earth projection. Preserving relative area is the most important property for a choropleth when comparing countries using color. 
