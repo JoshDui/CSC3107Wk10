@@ -242,3 +242,362 @@ When you simplify the total dataset down to ~10,000 vertices (keeping only about
 - The main island remains as a single, coarse boundary representation.
 
 Since you specified keep_shapes = TRUE, the row for Singapore itself is not dropped from the dataset (meaning nrow(country_boundaries) remains 284), but its geometry is simplified to a single polygon representing the main island.
+
+I am trying to add outer lines to my choropleth map to represent the world edges and an ocean background color for the globe. How would I do so? Here's my current implementation:
+
+```{r}
+#| label: final-map
+#| fig-width: 10
+#| fig-height: 12
+#| out-width: 100%
+
+
+
+largest_40 <- countries |>
+  filter(!is.na(code)) |>
+  mutate(area = st_area(geometry)) |>
+  arrange(desc(area)) |>
+  slice_head(n = 40) |>
+  st_centroid() |>
+  st_transform(8857)
+
+largest_40_coords <- largest_40 |>
+  mutate(
+    x = st_coordinates(geometry)[, 1],
+    y = st_coordinates(geometry)[, 2]
+  ) |>
+  st_drop_geometry()
+
+
+create_map <- function(var_name, fill_palette, breaks, legend_title, label_func) {
+  
+  main_data <- countries |>
+    filter(!is.na(code), !is.na(.data[[var_name]]))
+    
+  gray_data <- countries |> 
+    filter(is.na(code) | is.na(.data[[var_name]])) |>
+    mutate(
+      map_category = if_else(is.na(code), "Undetermined", "Missing"),
+      fill_color = if_else(is.na(code), "grey50", "grey80")
+    )
+    
+  ggplot() +
+    geom_sf(data = main_data, aes(fill = .data[[var_name]]), color = "grey30", linewidth = 0.15) +
+    geom_sf(data = gray_data, aes(color = map_category), fill = gray_data$fill_color, linewidth = 0.15) +
+    geom_shadowtext(
+      data = largest_40_coords,
+      aes(x = x, y = y, label = code),
+      size = 2.5,
+      color = "black",
+      bg.color = "white",
+      bg.r = 0.15
+    ) +
+    scale_fill_fermenter(
+      palette = fill_palette,
+      direction = 1,
+      breaks = breaks,
+      labels = label_func,
+      guide = guide_colorsteps(
+        title = legend_title,
+        title.position = "top",
+        title.hjust = 0.5,
+        barwidth = 20,
+        barheight = 0.7
+      )
+    ) +
+    scale_color_manual(
+      name = NULL,
+      values = c("Missing" = "grey30", "Undetermined" = "grey30"),
+      guide = "none" 
+    ) +
+    coord_sf(crs = "EPSG:8857", expand = FALSE) +
+    theme_void() +
+    theme(
+      legend.position = "top",
+      legend.title = element_text(face = "bold", size = 11),
+      legend.text = element_text(size = 9),
+      plot.margin = margin(5, 5, 5, 5)
+    )
+}
+
+p_life <- create_map(
+  "life_exp", 
+  "Greens", 
+  c(60, 65, 70, 75, 80), 
+  "Life Expectancy (Years)",
+  label_number()
+)
+
+p_gdp <- create_map(
+  "gdp_per_cap", 
+  "Oranges", 
+  c(2000, 5000, 10000, 20000, 50000, 100000), 
+  "GDP per Capita (Current USD)",
+  label_number(scale_cut = cut_short_scale())
+)
+
+dummy_gray <- data.frame(
+  map_category = c("Missing", "Undetermined"),
+  fill_color = c("grey80", "grey50")
+)
+
+p_legend <- ggplot(dummy_gray) +
+  geom_rect(aes(xmin = 0, xmax = 0, ymin = 0, ymax = 0, color = map_category), fill = dummy_gray$fill_color) +
+  scale_color_manual(
+    name = NULL,
+    values = c("Missing" = "grey30", "Undetermined" = "grey30"),
+    guide = guide_legend(override.aes = list(fill = c("grey80", "grey50")), nrow = 1)
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 11),
+    plot.margin = margin(t = 10, b = 0)
+  )
+
+final_plot <- p_life / p_gdp / p_legend +
+  plot_layout(heights = c(1, 1, 0.05)) +
+  plot_annotation(
+    title = "Global Development in 2024",
+    caption = "\"Undetermined\" refers to an area's legal status. \n Source: World bank (indicators, boundaries, and classification of legal status)",
+    theme = theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 18, margin = margin(b = 15)),
+      plot.caption = element_text(hjust = 1, size = 10, color = "grey40")
+    )
+  )
+
+final_plot
+```
+
+To achieve that beautiful curved globe effect with an ocean background, we need to create custom `sf` objects for the background polygon and the left/right border lines. We also need to calculate the precise clipping limits so the top and bottom crop cleanly at 56°S and 84°N.
+
+Here is your implementation updated with the ocean background and edges:
+
+```r
+#| label: final-map
+#| fig-width: 10
+#| fig-height: 12
+#| out-width: 100%
+
+# 1. Create the ocean background and side borders
+# Globe background (Light blue fill, no border)
+lon <- c(seq(-180, 180, by = 1), seq(180, -180, by = -1), -180)
+lat <- c(rep(84, 361), rep(-56, 361), 84)
+ocean_bg <- st_polygon(list(cbind(lon, lat))) |> st_sfc(crs = 4326)
+
+# Left and right antimeridian edges (Thin black line)
+left_edge <- st_linestring(cbind(rep(-180, 141), seq(-56, 84, by = 1))) |> st_sfc(crs = 4326)
+right_edge <- st_linestring(cbind(rep(180, 141), seq(-56, 84, by = 1))) |> st_sfc(crs = 4326)
+side_edges <- c(left_edge, right_edge)
+
+# 2. Get top 40 largest countries for labels
+largest_40 <- countries |>
+  filter(!is.na(code)) |>
+  mutate(area = st_area(geometry)) |>
+  arrange(desc(area)) |>
+  slice_head(n = 40) |>
+  st_centroid() |>
+  st_transform(8857)
+
+largest_40_coords <- largest_40 |>
+  mutate(
+    x = st_coordinates(geometry)[, 1],
+    y = st_coordinates(geometry)[, 2]
+  ) |>
+  st_drop_geometry()
+
+# 3. Y-limits in projected space (EPSG:8857)
+lims <- st_sfc(st_point(c(0, -56)), st_point(c(0, 84)), crs = 4326) |> 
+  st_transform(8857) |> 
+  st_coordinates()
+y_limits <- lims[, "Y"]
+
+create_map <- function(var_name, fill_palette, breaks, legend_title, label_func) {
+  
+  main_data <- countries |>
+    filter(!is.na(code), !is.na(.data[[var_name]]))
+    
+  gray_data <- countries |> 
+    filter(is.na(code) | is.na(.data[[var_name]])) |>
+    mutate(
+      map_category = if_else(is.na(code), "Undetermined", "Missing"),
+      fill_color = if_else(is.na(code), "grey50", "grey80")
+    )
+    
+  ggplot() +
+    # Add our new ocean background and side edges BEFORE drawing the countries
+    geom_sf(data = ocean_bg, fill = "#e0f3f8", color = NA) +
+    geom_sf(data = side_edges, color = "black", linewidth = 0.3) +
+    geom_sf(data = main_data, aes(fill = .data[[var_name]]), color = "grey30", linewidth = 0.15) +
+    geom_sf(data = gray_data, aes(color = map_category), fill = gray_data$fill_color, linewidth = 0.15) +
+    geom_shadowtext(
+      data = largest_40_coords,
+      aes(x = x, y = y, label = code),
+      size = 2.5,
+      color = "black",
+      bg.color = "white",
+      bg.r = 0.15
+    ) +
+    scale_fill_fermenter(
+      palette = fill_palette,
+      direction = 1,
+      breaks = breaks,
+      labels = label_func,
+      guide = guide_colorsteps(
+        title = legend_title,
+        title.position = "top",
+        title.hjust = 0.5,
+        barwidth = 20,
+        barheight = 0.7
+      )
+    ) +
+    scale_color_manual(
+      name = NULL,
+      values = c("Missing" = "grey30", "Undetermined" = "grey30"),
+      guide = "none" 
+    ) +
+    # Apply our calculated y-limits here
+    coord_sf(crs = "EPSG:8857", ylim = y_limits, expand = FALSE) +
+    theme_void() +
+    theme(
+      legend.position = "top",
+      legend.title = element_text(face = "bold", size = 11),
+      legend.text = element_text(size = 9),
+      plot.margin = margin(5, 5, 5, 5)
+    )
+}
+
+p_life <- create_map(
+  "life_exp", 
+  "Greens", 
+  c(60, 65, 70, 75, 80), 
+  "Life Expectancy (Years)",
+  label_number()
+)
+
+p_gdp <- create_map(
+  "gdp_per_cap", 
+  "Oranges", 
+  c(2000, 5000, 10000, 20000, 50000, 100000), 
+  "GDP per Capita (Current USD)",
+  label_number(scale_cut = cut_short_scale())
+)
+
+dummy_gray <- data.frame(
+  map_category = c("Missing", "Undetermined"),
+  fill_color = c("grey80", "grey50")
+)
+
+p_legend <- ggplot(dummy_gray) +
+  geom_rect(aes(xmin = 0, xmax = 0, ymin = 0, ymax = 0, color = map_category), fill = dummy_gray$fill_color) +
+  scale_color_manual(
+    name = NULL,
+    values = c("Missing" = "grey30", "Undetermined" = "grey30"),
+    guide = guide_legend(override.aes = list(fill = c("grey80", "grey50")), nrow = 1)
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 11),
+    plot.margin = margin(t = 10, b = 0)
+  )
+
+final_plot <- p_life / p_gdp / p_legend +
+  plot_layout(heights = c(1, 1, 0.05)) +
+  plot_annotation(
+    title = "Global Development in 2024",
+    caption = "\"Undetermined\" refers to an area's legal status. \n Source: World bank (indicators, boundaries, and classification of legal status)",
+    theme = theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 18, margin = margin(b = 15)),
+      plot.caption = element_text(hjust = 1, size = 10, color = "grey40")
+    )
+  )
+
+final_plot
+```
+
+### Code Walkthrough
+
+Here is a breakdown of how the background and edges were created and applied:
+
+#### 1. Creating the Ocean Polygon (`ocean_bg`)
+```r
+lon <- c(seq(-180, 180, by = 1), seq(180, -180, by = -1), -180)
+lat <- c(rep(84, 361), rep(-56, 361), 84)
+ocean_bg <- st_polygon(list(cbind(lon, lat))) |> st_sfc(crs = 4326)
+```
+Instead of relying on `ggplot2`'s panel background—which would fill the entire rectangular plot area—we create a precise spherical polygon representing the entire world bounded by our crop coordinates. 
+*   **`lon` & `lat`:** We generate hundreds of individual vertices by taking steps of `1` degree across the map. We trace from longitude -180 to 180 at latitude 84°N, and then trace backwards from 180 to -180 at latitude 56°S, closing the loop.
+*   **Why so many points?** Because when this simple rectangle is later transformed into the Equal Earth projection (`EPSG:8857`), having vertices every 1 degree allows the left and right edges to mathematically bend and trace the curved antimeridian accurately. If we only used the 4 corners, `sf` would draw straight lines between them!
+
+#### 2. Creating the Side Borders (`side_edges`)
+```r
+left_edge <- st_linestring(cbind(rep(-180, 141), seq(-56, 84, by = 1))) |> st_sfc(crs = 4326)
+right_edge <- st_linestring(cbind(rep(180, 141), seq(-56, 84, by = 1))) |> st_sfc(crs = 4326)
+```
+The prompt specifically asked to "leave the top and bottom edges open". If we added a black border to our `ocean_bg` polygon, it would draw a box. Instead, we generate two independent `st_linestring` objects corresponding strictly to the left (-180° longitude) and right (180° longitude) edges.
+
+#### 3. Calculating the Clipping Limits (`y_limits`)
+```r
+lims <- st_sfc(st_point(c(0, -56)), st_point(c(0, 84)), crs = 4326) |> 
+  st_transform(8857) |> 
+  st_coordinates()
+y_limits <- lims[, "Y"]
+```
+You can't pass latitude limits like `ylim = c(-56, 84)` directly into `coord_sf` when you've specified a projected CRS like `EPSG:8857` (because Equal Earth expects coordinates in meters, not degrees). 
+*   Here, we create two dummy points at the south and north clipping latitudes (0° lon, 56°S and 0° lon, 84°N). 
+*   We use `st_transform(8857)` to convert them into meters to see exactly where those latitudes end up on the unrolled map.
+*   We extract those projected "Y" (vertical) coordinates to pass into `coord_sf(ylim = y_limits)`.
+
+#### 4. Layering in `ggplot2`
+```r
+    geom_sf(data = ocean_bg, fill = "#e0f3f8", color = NA) +
+    geom_sf(data = side_edges, color = "black", linewidth = 0.3) +
+```
+Finally, within the `create_map` function, we ensure these components are drawn **first**, underneath the main and gray country data. We set `color = NA` on the ocean to keep its top and bottom borders invisible, and then stack the black `side_edges` over it.
+
+
+the ocean background doesnt cover the whole globe and gets cut off on the side, how would i troubleshoot and patch this?
+
+Edited grpAssgmt10.qmd
+
+Ah, I see exactly what happened! Good catch.
+
+### The Cause: Projecting Straight Lines
+When `st_polygon` connects points, it draws straight lines between them. My initial code only provided dense coordinate points for the **top** (84°N) and **bottom** (-56°S) edges of the polygon. 
+
+However, it connected the top-right corner `(180, 84)` directly to the bottom-right corner `(180, -56)` with no intermediate points in between. When `ggplot2` projected this polygon into the Equal Earth CRS (`EPSG:8857`), it projected those two corners and then drew a straight line between them. But Equal Earth's meridians (like the edge at 180°) are heavily curved! Because our polygon edge lacked intermediate vertices, it stayed stubbornly straight, cutting inward and chopping off the natural "bulge" of the globe on the left and right sides.
+
+### The Fix
+To ensure the polygon bends properly along the antimeridian when projected, we must explicitly provide points along the left and right edges so that `ggplot2` has enough data to trace the curve.
+
+Here is the updated logic I just patched into your file:
+
+```r
+# 1. Top edge: Sweep from -180 to 180 longitude at latitude 84
+lon_top <- seq(-180, 180, by = 1)
+lat_top <- rep(84, length(lon_top))
+
+# 2. Right edge: Sweep from 83 down to -56 latitude at longitude 180
+lon_right <- rep(180, length(seq(83, -56, by = -1)))
+lat_right <- seq(83, -56, by = -1)
+
+# 3. Bottom edge: Sweep backwards from 180 to -180 longitude at latitude -56
+lon_bottom <- seq(180, -180, by = -1)
+lat_bottom <- rep(-56, length(lon_bottom))
+
+# 4. Left edge: Sweep from -55 back up to 84 latitude at longitude -180
+lon_left <- rep(-180, length(seq(-55, 84, by = 1)))
+lat_left <- seq(-55, 84, by = 1)
+
+# Combine all 4 edges into a single closed loop
+lon <- c(lon_top, lon_right, lon_bottom, lon_left)
+lat <- c(lat_top, lat_right, lat_bottom, lat_left)
+
+# Create the full background polygon
+ocean_bg <- st_polygon(list(cbind(lon, lat))) |> st_sfc(crs = 4326)
+```
+
+Now, `ocean_bg` is composed of 1002 points tracing a complete, dense rectangle around the clipped world. When passed into the `EPSG:8857` projection, the left and right edges will perfectly contour to the shape of the globe, filling the whole map up to the thin black border lines!
+
+Try running the chunk again, the ocean background should now perfectly envelop the continents!
