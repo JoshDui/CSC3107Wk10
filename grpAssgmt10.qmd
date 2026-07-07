@@ -1,4 +1,17 @@
-﻿## 3.1 Identify Suitable Fill Variables for Choropleth Maps
+﻿---
+title: "Choropleth Lab"
+subtitle: "Week 10 Lab"
+format:
+  html:
+    toc: true
+    number-sections: true
+execute:
+  echo: true
+  message: false
+  warning: false
+---
+
+## 3.1 Identify Suitable Fill Variables for Choropleth Maps
 
 | Variable | Variable type | Suitable as fill color? Why or why not? | Would the result be a choropleth map? Why or why not? |
 |---|---|---|---|
@@ -9,76 +22,110 @@
 
 ## 3.2 Start Coding
 ```{r}
- #| label: setup
-  #| message: false
-  library(tidyverse)
-  library(mapview)
-  library(patchwork)
-  library(readxl)
-  library(rmapshaper)
-  library(scales)
-  library(sf)
-  library(shadowtext)
+#| label: setup
+#| message: false
+library(tidyverse)
+library(mapview)
+library(patchwork)
+library(readxl)
+library(rmapshaper)
+library(scales)
+library(sf)
+library(shadowtext)
 ```
 
+## 3.3. Import Country Statistics
 ```{r}
-gdp_file <- "API_NY.GDP.PCAP.PP.KD_DS2_en_excel_v2_417139.xls"
-life_file <- "API_SP.DYN.LE00.IN_DS2_en_excel_v2_404463.xls"
-
-gdp <- read_xls(gdp_file, sheet = "Data", skip = 3) |>
-transmute(
-    name = `Country Name`,
-    code = `Country Code`,
-    gdp_per_cap = as.numeric(`2024`)
-)
-
-life <- read_xls(life_file, sheet = "Data", skip = 3) |>
-transmute(
-    name = `Country Name`,
-    code = `Country Code`,
-    life_exp = as.numeric(`2024`)
-)
-
-regions <- read_xls(gdp_file, sheet = "Metadata - Countries") |>
-transmute(
-    code = `Country Code`,
-    region = Region
-)
-
-country_stats <- gdp |>
-left_join(life, by = c("name", "code")) |>
-left_join(regions, by = "code") |>
-filter(!is.na(region)) |>
-select(name, code, gdp_per_cap, life_exp)
+#| label: import-stats
+country_stats <-
+    "API_NY.GDP.PCAP.PP.KD_DS2_en_excel_v2_417139.xls" |>
+    read_xls(skip = 3) |>
+    select(name = "Country Name", code = "Country Code", gdp_per_cap = "2024") |>
+    left_join(
+        "API_SP.DYN.LE00.IN_DS2_en_excel_v2_404463.xls" |>
+            read_xls(skip = 3) |>
+            select(code = "Country Code", life_exp = "2024"),
+        join_by(code)
+    ) |>
+    left_join(
+        "API_NY.GDP.PCAP.PP.KD_DS2_en_excel_v2_417139.xls" |>
+            read_xls(sheet = "Metadata - Countries") |>
+            select(code = "Country Code", region = "Region"),
+        join_by(code)
+    ) |>
+    filter(!is.na(region)) |>
+    select(name, code, gdp_per_cap, life_exp)
 
 country_stats
+```
+
+## 3.3. Verifier Task
+```{r}
+#| label: verify-3.1
+glimpse(country_stats)
 nrow(country_stats)
-```
-
-```{r}
-country_boundaries <- st_read("WB_GAD_ADM0_complete.geojson", quiet = TRUE) |>
-    transmute(
-      code = ISO_A3,
-      status = WB_STATUS
+country_stats |>
+    summarize(
+        n_economies      = n(),
+        n_missing_gdp    = sum(is.na(gdp_per_cap)),
+        n_missing_life   = sum(is.na(life_exp)),
+        n_missing_either = sum(is.na(gdp_per_cap) | is.na(life_exp)),
+        n_complete       = sum(!is.na(gdp_per_cap) & !is.na(life_exp))
     )
-
-  country_boundaries
-  nrow(country_boundaries)
-  unique(st_geometry_type(country_boundaries))
-  st_is_longlat(country_boundaries)
 ```
 
+## 3.4. Import the Boundaries as sf Objects
 ```{r}
+#| label: read-boundaries
+#| cache: true
+country_boundaries <-
+    "WB_GAD_ADM0_complete.geojson" |>
+    read_sf() |>
+    select(code = ISO_A3, status = WB_STATUS)
+
+country_boundaries
+```
+
+## 3.4. Verifier Task
+```{r}
+#| label: verifier-3.4
+class(country_boundaries)
+unique(st_geometry_type(country_boundaries))
+st_crs(country_boundaries)$input
+st_is_longlat(country_boundaries)
+```
+
+## 3.5 Validate and Repair the Geometries
+```{r}
+#| label: repair-geometries
+#| cache: true
 sum(!st_is_valid(country_boundaries))
 
 country_boundaries <- st_make_valid(country_boundaries)
 
 sum(!st_is_valid(country_boundaries))
-nrow(country_boundaries)
-unique(st_geometry_type(country_boundaries))
 ```
 
+## 3.5. Verifier Task
 ```{r}
+#| label: verify-3.5
+#| cache: true
+
+# Before
+n_rows_before <- nrow(country_boundaries)
+geom_types_before <- unique(st_geometry_type(country_boundaries))
+sum(!st_is_valid(country_boundaries))
+country_boundaries <- st_make_valid(country_boundaries)
+
+# After
+sum(!st_is_valid(country_boundaries))
+identical(n_rows_before, nrow(country_boundaries))
+identical(geom_types_before, unique(st_geometry_type(country_boundaries)))
+```
+
+## 3.6. Simplify the Polygons
+```{r}
+#| label: simplify
 # a. Number of boundary points before simplification
 points_before <- npts(country_boundaries)
 points_before
@@ -110,10 +157,73 @@ sgp_polygons_after <- country_boundaries |>
   nrow()
 
 sgp_polygons_after
+```
 
-# Verifier checks
+## 3.6. Verifier Task
+```{r}
+#| label: verify-3.6
 nrow(country_boundaries)
 sum(st_is_empty(country_boundaries))
 sum(!st_is_valid(country_boundaries))
 ```
 
+## 3.7. Cure the Antimeridian Problem
+```{r}
+#| label: antimeridian-prob
+# a.
+ggplot(country_boundaries) + geom_sf()
+
+# b.
+country_boundaries <-
+    country_boundaries |>
+    st_wrap_dateline() |>
+    st_cast("MULTIPOLYGON")
+
+ggplot(country_boundaries) + geom_sf()
+```
+
+## 3.7. Verifier Task
+```{r}
+#| label: verify-3.7
+n_rows_before <- nrow(country_boundaries)
+geom_types_before <- unique(st_geometry_type(country_boundaries))
+
+country_boundaries <-
+    country_boundaries |>
+    st_wrap_dateline() |>
+    st_cast("MULTIPOLYGON")
+
+identical(n_rows_before, nrow(country_boundaries))
+identical(geom_types_before, unique(st_geometry_type(country_boundaries)))
+sum(!st_is_valid(country_boundaries))
+```
+
+## 3.8 Merge Features That Share a Country Code
+```{r}
+#| label: merge-country-code
+
+# a. 
+country_boundaries |>
+    st_drop_geometry() |>
+    filter(!is.na(code)) |>
+    count(code) |>
+    filter(n > 1)
+
+# c. 
+country_boundaries <-
+    country_boundaries |>
+    mutate(group_id = if_else(is.na(code), row_number(), NA_integer_)) |>
+    group_by(code, group_id) |>
+    summarize(
+        status = if_else(
+            any(status == "Member State"),
+            "Contains a Member State",
+            "Does Not Contain a Member State"
+        ),
+        .groups = "drop"
+    ) |>
+    select(-group_id) |>
+    st_cast("MULTIPOLYGON")
+```
+
+b. The code BES is shared with Bonaire, Saba, and Sint Eustatius. These are separate Caribbean islands that have been special municipalities of the Netherlands since 2010 following the dissolution of the Netherlands Antilles. ^[https://www.iso.org/obp/ui/?__cf_chl_f_tk=ALBocD5LfG6qwIIA62NLdSfQ5zLB_W53YejqIETQukc-1783392780-1.0.1.1-MEBqGxLme6aD2gyXgD.eFst0MKrlMo1KMilegYKuQTU#iso:code:3166:BQ]
