@@ -606,3 +606,96 @@ ocean_bg <- st_polygon(list(cbind(lon, lat))) |> st_sfc(crs = 4326)
 Now, `ocean_bg` is composed of 1002 points tracing a complete, dense rectangle around the clipped world. When passed into the `EPSG:8857` projection, the left and right edges will perfectly contour to the shape of the globe, filling the whole map up to the thin black border lines!
 
 Try running the chunk again, the ocean background should now perfectly envelop the continents!
+
+
+#3.9
+My countries object has 284 features instead of the expected 264 — is this the expected output?
+
+There's an important mismatch: the assignment expects countries to have 264 features, but yours has 284 — that's 20 extra rows you need to track down.
+What's correct:
+
+The anti_join() unmatched check found exactly one row — Channel Islands (code CHI) — exactly as expected.
+class(countries) correctly shows "sf" "data.frame".
+names(countries) correctly includes name, gdp_per_cap, life_exp.
+
+What's off:
+
+nrow(countries) is 284, not the expected 264. That's 20 more features than the task specifies.
+
+Likely cause — look at rows 3 and 4 in Image 1:
+3  KOR  Member State      Korea, Rep.                  ...  POLYGON ((126.6902 37.84329...
+4  PRK  Non Member State  Korea, Dem. People's Rep.     ...  POLYGON ((126.6902 37.84329...
+Notice rows 3 and 4 have identical geometry (126.6902 37.84329...) even though they're two different countries (South Korea vs North Korea). That's a red flag — it suggests country_boundaries has duplicate or misassigned geometries somewhere, which is likely inflating your row count from 264 to 284.
+What to check:
+
+Did you fully complete the earlier simplification/merge steps (the ones mentioned in "Now that the boundaries are repaired, simplified, and merged into one feature per code")? If country_boundaries itself has more than 264 rows before this join, that's the root cause — not the join itself.
+Run this to check the row count of country_boundaries alone:
+
+rnrow(country_boundaries)
+If this isn't 264, the problem is upstream — likely in whatever merging/group_by()+summarise() step was supposed to collapse multiple sub-geometries into one feature per country code.
+
+Also check for actual duplicate codes:
+
+rcountry_boundaries |>
+  st_drop_geometry() |>
+  count(code) |>
+  filter(n > 1)
+
+is it becuz i missed the 3.8?
+
+Yes — you skipped section 3.8 entirely. Looking at your .qmd, it goes straight from the simplification step to ## 3.9, with no ## 3.8 in between. That's exactly why country_boundaries still has extra rows — it hasn't been collapsed to one feature per code yet, which is why your join produced 284 rows instead of 264.
+Here's the code for 3.8:
+Part a — find codes shared by more than one feature:
+r#| label: find-shared-codes
+shared_codes <- country_boundaries |>
+  st_drop_geometry() |>
+  filter(!is.na(code)) |>
+  count(code) |>
+  filter(n > 1)
+
+shared_codes
+Part b — investigate one code (other than AUS) and explain it:
+First, look at the actual features under a shared code (pick one from the shared_codes list, e.g. FRA, NLD, NOR, GBR are common ones with overseas territories):
+r#| label: inspect-shared-code
+country_boundaries |>
+  filter(code == "FRA") |>   # replace FRA with whichever code you choose
+  st_centroid() |>
+  st_coordinates()
+This gives you the longitude/latitude of each feature's centroid, which you can look up in Google Earth or Google Maps to identify what each one actually is. Then write a short explanation in the same style as the AUS example, with a cited URL. I can't do this identification step for you since I don't have your actual data — but once you paste the coordinates it returns, I can help you identify the location and find a source.
+Part c — merge into one feature per code:
+r#| label: merge-by-code
+country_boundaries <- country_boundaries |>
+  group_by(code) |>
+  mutate(
+    status = case_when(
+      is.na(code) ~ status,  # leave disputed areas (no code) untouched
+      n() == 1 ~ status,      # leave unique codes untouched
+      any(status == "Member State") ~ "Contains a Member State",
+      TRUE ~ "Does Not Contain a Member State"
+    )
+  ) |>
+  summarise(status = first(status), .groups = "drop") |>
+  st_cast("MULTIPOLYGON")
+
+country_boundaries
+Verifier for 3.8:
+r#| label: verify-3.8
+nrow(country_boundaries)   # expect 264
+
+country_boundaries |>
+  st_drop_geometry() |>
+  filter(!is.na(code)) |>
+  count(code) |>
+  filter(n > 1)              # expect 0 rows
+
+country_boundaries |>
+  st_drop_geometry() |>
+  count(is.na(code))          # expect 24 with undetermined status (no code)
+
+unique(st_geometry_type(country_boundaries))  # expect only MULTIPOLYGON
+Once this passes (264 features, no duplicate codes, 24 undetermined-status features, all multipolygons), go back and rerun your 3.9 join — nrow(countries) should now correctly show 264.
+
+#3.10
+Looking at my Web Mercator map, the grid lines (graticule) near the top and bottom look much more spread out than near the equator — is that connected to the area distortion issue, even without labeling specific countries?
+
+The increasing spacing between latitude lines toward the poles is a direct visual signature of Web Mercator's area distortion — the projection stretches both the graticule and any landmasses at high latitudes to preserve local angles, which is why polar regions appear inflated relative to equatorial regions, regardless of which specific country you're looking at.
